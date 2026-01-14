@@ -23,3 +23,6 @@ ios/Runner/Info.plist
 # Others
 *.log
 *.lock
+
+# Environment variables (contains sensitive API keys)
+.env
