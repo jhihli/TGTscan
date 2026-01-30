@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_datawedge/flutter_datawedge.dart';
@@ -517,7 +518,12 @@ class _ScanScreenState extends State<ScanScreen> {
   final _weightController = TextEditingController();
   final _dateController = TextEditingController();
   final _noteController = TextEditingController();
+  final _venderController = TextEditingController();
   final List<XFile> _imageFiles = [];
+
+  // Dynamic number and qty fields for multiple product creation
+  List<TextEditingController> _numberControllers = [TextEditingController()];
+  List<TextEditingController> _qtyControllers = [TextEditingController()];
 
   // FocusNodes for field progression
   final FocusNode _barcodeFocusNode = FocusNode();
@@ -568,10 +574,32 @@ class _ScanScreenState extends State<ScanScreen> {
       }
     });
 
-    // Add listener to auto-select all text in barcode field (main form)
+    // Add listener to detect barcode scan and auto-move to SO Number field
+    // Scanner typically sends data quickly, so we use a debounce timer
+    Timer? barcodeDebounceTimer;
+    String lastBarcodeValue = '';
+
     _barcodeController.addListener(() {
-      if (_isImport && _barcodeController.text.isNotEmpty && !_isDialogOpen) {
-        // After text changes, select all so next scan replaces it
+      if (_isImport && !_isDialogOpen && _barcodeFocusNode.hasFocus) {
+        final currentValue = _barcodeController.text;
+
+        // Cancel any existing timer
+        barcodeDebounceTimer?.cancel();
+
+        // Only trigger if text was added (not deleted) and has meaningful length
+        if (currentValue.isNotEmpty && currentValue.length > lastBarcodeValue.length && currentValue.length >= 3) {
+          // Debounce: wait 200ms after last character to ensure scan is complete
+          barcodeDebounceTimer = Timer(const Duration(milliseconds: 200), () {
+            if (mounted && _isImport && _barcodeFocusNode.hasFocus && _barcodeController.text == currentValue) {
+              // Auto-move focus to SO Number field after scan completes
+              _soNumberFocusNode.requestFocus();
+            }
+          });
+        }
+
+        lastBarcodeValue = currentValue;
+
+        // Select all text so next scan replaces it
         Future.microtask(() {
           if (_isImport && _barcodeController.text.isNotEmpty && !_isDialogOpen) {
             _barcodeController.selection = TextSelection(
@@ -586,28 +614,67 @@ class _ScanScreenState extends State<ScanScreen> {
     _scanSubscription = _dataWedge.onScanResult.listen((ScanResult result) {
       // Normal screen scanning behavior only (dialog handled by text input)
       if (!_isDialogOpen) {
-        if (result.labelType == 'LABEL-TYPE-EAN13') {
+        // Use focus state to determine where to put the scanned data
+        // If Barcode field has focus (Import mode), put data there and move to SO Number
+        // Otherwise, put data in SO Number field
+        if (_isImport && _barcodeFocusNode.hasFocus) {
           setState(() {
             _barcodeController.text = result.data;
           });
-          // After barcode scan, move to SO Number field
-          _soNumberFocusNode.requestFocus();
-        } else {
-          setState(() {
-            if (_isImport) {
-              _soNumberImportController.text = result.data;
-            } else {
-              _soNumberExportController.text = result.data;
+          // After barcode scan, move to SO Number field with delay to ensure focus change works
+          Future.delayed(const Duration(milliseconds: 100), () {
+            if (mounted) {
+              _soNumberFocusNode.requestFocus();
             }
           });
-          // After SO Number scan, move to Weight field (if in import mode)
-          if (_isImport) {
-            _weightFocusNode.requestFocus();
+        } else if (_soNumberFocusNode.hasFocus) {
+          setState(() {
+            if (_isImport) {
+              _soNumberImportController.text = result.data.toUpperCase();
+            } else {
+              _soNumberExportController.text = result.data.toUpperCase();
+            }
+          });
+          // After SO Number scan, move to Weight field (if in import mode) with delay
+          Future.delayed(const Duration(milliseconds: 100), () {
+            if (mounted && _isImport) {
+              _weightFocusNode.requestFocus();
+            }
+          });
+        } else {
+          // Default: if no specific field has focus, use the old label type logic
+          if (result.labelType == 'LABEL-TYPE-EAN13') {
+            setState(() {
+              _barcodeController.text = result.data;
+            });
+            Future.delayed(const Duration(milliseconds: 100), () {
+              if (mounted && _isImport) {
+                _soNumberFocusNode.requestFocus();
+              }
+            });
+          } else {
+            setState(() {
+              if (_isImport) {
+                _soNumberImportController.text = result.data.toUpperCase();
+              } else {
+                _soNumberExportController.text = result.data.toUpperCase();
+              }
+            });
+            Future.delayed(const Duration(milliseconds: 100), () {
+              if (mounted && _isImport) {
+                _weightFocusNode.requestFocus();
+              }
+            });
           }
         }
       }
     });
     _dateController.text = DateFormat('yyyy-MM-dd').format(DateTime.now());
+
+    // Auto-focus on Barcode field when screen first loads (Import mode is default)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _barcodeFocusNode.requestFocus();
+    });
   }
 
   @override
@@ -624,13 +691,25 @@ class _ScanScreenState extends State<ScanScreen> {
     _weightController.dispose();
     _dateController.dispose();
     _noteController.dispose();
+    _venderController.dispose();
     _searchBarcodeController.dispose();
+    for (var controller in _numberControllers) {
+      controller.dispose();
+    }
+    for (var controller in _qtyControllers) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
   Future<void> _takePicture() async {
     final ImagePicker picker = ImagePicker();
-    final XFile? image = await picker.pickImage(source: ImageSource.camera);
+    final XFile? image = await picker.pickImage(
+      source: ImageSource.camera,
+      maxWidth: 1024,
+      maxHeight: 1024,
+      imageQuality: 70,
+    );
     if (image != null) {
       setState(() {
         _imageFiles.add(image);
@@ -646,10 +725,6 @@ class _ScanScreenState extends State<ScanScreen> {
 
   Future<void> _submit() async {
     if (_formKey.currentState!.validate()) {
-      if (_imageFiles.isEmpty) {
-        _showErrorDialog('Please take at least one photo before submitting.');
-        return;
-      }
       setState(() {
         _isLoading = true;
       });
@@ -674,42 +749,98 @@ class _ScanScreenState extends State<ScanScreen> {
         final apiBaseUrl = dotenv.env['API_BASE_URL'] ?? 'https://api.toyoshimainventory.com';
         final apiKey = dotenv.env['API_KEY'] ?? '';
 
-        final request = http.MultipartRequest(
-          'POST',
-          Uri.parse('$apiBaseUrl/product/scanner/'),
-        );
-        request.headers['X-API-Key'] = apiKey;
-
         if (_isImport) {
-          request.fields['action'] = 'inbound';
-          request.fields['barcode'] = _barcodeController.text;
-          request.fields['so_number'] = _soNumberImportController.text;
-          request.fields['weight'] = _weightController.text;
-          request.fields['date'] = _dateController.text;
-          request.fields['noted'] = _noteController.text;
-          request.fields['current_status'] = '0';
+          // Build list of number-qty pairs to submit
+          List<Map<String, String>> itemsToSubmit = [];
+          for (int i = 0; i < _numberControllers.length; i++) {
+            final number = _numberControllers[i].text.trim();
+            final qty = _qtyControllers[i].text.trim();
+            if (number.isNotEmpty || qty.isNotEmpty) {
+              itemsToSubmit.add({'number': number, 'qty': qty});
+            }
+          }
+
+          // If no items entered, submit once with empty values
+          if (itemsToSubmit.isEmpty) {
+            itemsToSubmit = [{'number': '', 'qty': ''}];
+          }
+
+          int successCount = 0;
+          String? lastError;
+
+          // Submit one product for each number-qty pair
+          for (var item in itemsToSubmit) {
+            final request = http.MultipartRequest(
+              'POST',
+              Uri.parse('$apiBaseUrl/product/scanner/'),
+            );
+            request.headers['X-API-Key'] = apiKey;
+
+            request.fields['action'] = 'inbound';
+            request.fields['barcode'] = _barcodeController.text;
+            request.fields['so_number'] = _soNumberImportController.text;
+            request.fields['vender'] = _venderController.text;
+            request.fields['weight'] = _weightController.text;
+            request.fields['date'] = _dateController.text;
+            request.fields['noted'] = _noteController.text;
+            request.fields['current_status'] = '0';
+            request.fields['created_by_username'] = 'mobile';
+            if (item['number']!.isNotEmpty) {
+              request.fields['number'] = item['number']!;
+            }
+            if (item['qty']!.isNotEmpty) {
+              request.fields['qty'] = item['qty']!;
+            }
+
+            for (var savedPath in savedImagePaths) {
+              request.files.add(
+                await http.MultipartFile.fromPath('photos', savedPath),
+              );
+            }
+
+            final response = await request.send();
+            final responseBody = await response.stream.bytesToString();
+
+            if (response.statusCode == 201 || response.statusCode == 200) {
+              successCount++;
+            } else {
+              lastError = responseBody;
+            }
+          }
+
+          // Show result
+          if (successCount == itemsToSubmit.length) {
+            _showSuccessDialog(successCount > 1
+                ? '$successCount products submitted successfully'
+                : 'Data submitted successfully');
+          } else if (successCount > 0) {
+            _showErrorDialog('$successCount of ${itemsToSubmit.length} products submitted. Error: $lastError');
+          } else {
+            _showErrorDialog('Failed to submit data: $lastError');
+          }
         } else {
+          // Export mode - single request, no number field
+          final request = http.MultipartRequest(
+            'POST',
+            Uri.parse('$apiBaseUrl/product/scanner/'),
+          );
+          request.headers['X-API-Key'] = apiKey;
+
           request.fields['action'] = 'outbound';
           request.fields['date'] = _dateController.text;
           request.fields['so_number'] = _soNumberExportController.text;
           request.fields['current_status'] = '1';
-        }
+          request.fields['created_by_username'] = 'mobile';
 
-        for (var savedPath in savedImagePaths) {
-          request.files.add(
-            await http.MultipartFile.fromPath('photos', savedPath),
-          );
-        }
-
-        final response = await request.send();
-        final responseBody = await response.stream.bytesToString();
-        if (_isImport) {
-          if (response.statusCode == 201 || response.statusCode == 200) {
-            _showSuccessDialog('Data submitted successfully');
-          } else {
-            _showErrorDialog('Failed to submit data: $responseBody');
+          for (var savedPath in savedImagePaths) {
+            request.files.add(
+              await http.MultipartFile.fromPath('photos', savedPath),
+            );
           }
-        } else {
+
+          final response = await request.send();
+          final responseBody = await response.stream.bytesToString();
+
           if (response.statusCode == 200) {
             _showSuccessDialog('Data updated successfully');
           } else if (response.statusCode == 404) {
@@ -745,6 +876,16 @@ class _ScanScreenState extends State<ScanScreen> {
                 _soNumberExportController.clear();
                 _weightController.clear();
                 _noteController.clear();
+                _venderController.clear();
+                // Reset number and qty controllers
+                for (var controller in _numberControllers) {
+                  controller.dispose();
+                }
+                for (var controller in _qtyControllers) {
+                  controller.dispose();
+                }
+                _numberControllers = [TextEditingController()];
+                _qtyControllers = [TextEditingController()];
                 FocusScope.of(context).unfocus();
                 setState(() {
                   _imageFiles.clear();
@@ -785,18 +926,10 @@ class _ScanScreenState extends State<ScanScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color.fromARGB(255, 220, 242, 245),
-      appBar: PreferredSize(
-        preferredSize: const Size.fromHeight(45),
-        child: AppBar(
-          title: Image.asset(
-            'assets/tgtlogo.jpg',
-            height: 32,
-            fit: BoxFit.contain,
-          ),
-          centerTitle: true,
-          elevation: 0,
-          backgroundColor: Colors.transparent,
-        ),
+      appBar: AppBar(
+        elevation: 0,
+        backgroundColor: Colors.transparent,
+        toolbarHeight: 0,
       ),
       body: Stack(
         children: [
@@ -816,17 +949,17 @@ class _ScanScreenState extends State<ScanScreen> {
                         'Barcode',
                         Icons.barcode_reader,
                         focusNode: _barcodeFocusNode,
+                        nextFocusNode: _soNumberFocusNode,
                       ),
                       const SizedBox(height: 10),
                     ],
                     Row(
                       children: [
                         Expanded(
-                          child: _buildTextFormField(
+                          child: _buildSoNumberField(
                             _isImport ? _soNumberImportController : _soNumberExportController,
-                            'SO Number',
-                            Icons.scanner,
                             focusNode: _soNumberFocusNode,
+                            nextFocusNode: _isImport ? _weightFocusNode : null,
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -839,6 +972,13 @@ class _ScanScreenState extends State<ScanScreen> {
                     ),
                     const SizedBox(height: 10),
                     if (_isImport) ...[
+                      _buildTextFormField(
+                        _venderController,
+                        'Vender',
+                        Icons.business,
+                        isRequired: true,
+                      ),
+                      const SizedBox(height: 10),
                       Row(
                         children: [
                           Expanded(
@@ -852,16 +992,14 @@ class _ScanScreenState extends State<ScanScreen> {
                               Icons.line_weight,
                               keyboardType: TextInputType.number,
                               focusNode: _weightFocusNode,
+                              nextFocusNode: _noteFocusNode,
                             ),
                           ),
                         ],
                       ),
                       const SizedBox(height: 10),
-                    ] else ...[
-                      _buildDateField(),
+                      _buildNumberFields(),
                       const SizedBox(height: 10),
-                    ],
-                    if (_isImport) ...[
                       _buildTextFormField(
                         _noteController,
                         'Note',
@@ -869,6 +1007,9 @@ class _ScanScreenState extends State<ScanScreen> {
                         isRequired: false,
                         focusNode: _noteFocusNode,
                       ),
+                      const SizedBox(height: 10),
+                    ] else ...[
+                      _buildDateField(),
                       const SizedBox(height: 10),
                     ],
                     Row(
@@ -1041,13 +1182,68 @@ class _ScanScreenState extends State<ScanScreen> {
     TextInputType? keyboardType,
     bool isRequired = true,
     FocusNode? focusNode,
+    FocusNode? nextFocusNode,
+  }) {
+    return KeyboardListener(
+      focusNode: FocusNode(),
+      onKeyEvent: (KeyEvent event) {
+        // Detect Enter key from scanner or keyboard
+        if (event is KeyDownEvent &&
+            (event.logicalKey == LogicalKeyboardKey.enter ||
+             event.logicalKey == LogicalKeyboardKey.numpadEnter)) {
+          if (nextFocusNode != null) {
+            nextFocusNode.requestFocus();
+          }
+        }
+      },
+      child: TextFormField(
+        controller: controller,
+        focusNode: focusNode,
+        decoration: InputDecoration(
+          labelText: label,
+          prefixIcon: Icon(icon),
+          filled: true,
+          fillColor: Colors.grey[100],
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide.none,
+          ),
+        ),
+        keyboardType: keyboardType,
+        textInputAction: nextFocusNode != null ? TextInputAction.next : TextInputAction.done,
+        onFieldSubmitted: (_) {
+          if (nextFocusNode != null) {
+            nextFocusNode.requestFocus();
+          }
+        },
+        validator: (value) {
+          if (isRequired && (value == null || value.isEmpty)) {
+            return 'Please enter a $label';
+          }
+          return null;
+        },
+      ),
+    );
+  }
+
+  Widget _buildSoNumberField(
+    TextEditingController controller, {
+    FocusNode? focusNode,
+    FocusNode? nextFocusNode,
   }) {
     return TextFormField(
       controller: controller,
       focusNode: focusNode,
+      textCapitalization: TextCapitalization.characters,
+      inputFormatters: [
+        // Convert to uppercase
+        TextInputFormatter.withFunction((oldValue, newValue) {
+          return newValue.copyWith(text: newValue.text.toUpperCase());
+        }),
+      ],
       decoration: InputDecoration(
-        labelText: label,
-        prefixIcon: Icon(icon),
+        labelText: 'SO Number',
+        prefixIcon: const Icon(Icons.scanner),
         filled: true,
         fillColor: Colors.grey[100],
         border: OutlineInputBorder(
@@ -1055,13 +1251,124 @@ class _ScanScreenState extends State<ScanScreen> {
           borderSide: BorderSide.none,
         ),
       ),
-      keyboardType: keyboardType,
+      textInputAction: nextFocusNode != null ? TextInputAction.next : TextInputAction.done,
+      onFieldSubmitted: (_) {
+        if (nextFocusNode != null) {
+          nextFocusNode.requestFocus();
+        }
+      },
       validator: (value) {
-        if (isRequired && (value == null || value.isEmpty)) {
-          return 'Please enter a $label';
+        if (value == null || value.isEmpty) {
+          return 'Please enter a SO Number';
+        }
+        // Check if SO Number starts with valid prefix (letters or numbers)
+        if (!RegExp(r'^[A-Z0-9]').hasMatch(value)) {
+          return 'SO Number must start with a letter or number';
+        }
+        // Minimum length check
+        if (value.length < 3) {
+          return 'SO Number must be at least 3 characters';
         }
         return null;
       },
+    );
+  }
+
+  Widget _buildNumberFields() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ...List.generate(_numberControllers.length, (index) {
+          final isLast = index == _numberControllers.length - 1;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8.0),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Number field - takes 60% of space
+                Expanded(
+                  flex: 6,
+                  child: TextFormField(
+                    controller: _numberControllers[index],
+                    decoration: InputDecoration(
+                      labelText: _numberControllers.length > 1
+                          ? 'Number ${index + 1}'
+                          : 'Number',
+                      hintText: 'Enter number',
+                      prefixIcon: const Icon(Icons.tag, color: Colors.blue),
+                      filled: true,
+                      fillColor: Colors.grey[100],
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: Colors.grey[300]!),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: Colors.grey[300]!),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Colors.blue, width: 2),
+                      ),
+                    ),
+                    keyboardType: TextInputType.text,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // Qty field - takes 30% of space
+                Expanded(
+                  flex: 3,
+                  child: TextFormField(
+                    controller: _qtyControllers[index],
+                    decoration: InputDecoration(
+                      labelText: 'Qty',
+                      hintText: 'Qty',
+                      filled: true,
+                      fillColor: Colors.grey[100],
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: Colors.grey[300]!),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: Colors.grey[300]!),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Colors.blue, width: 2),
+                      ),
+                    ),
+                    keyboardType: TextInputType.number,
+                  ),
+                ),
+                // Action buttons
+                if (_numberControllers.length > 1)
+                  IconButton(
+                    icon: const Icon(Icons.remove_circle, color: Colors.red),
+                    onPressed: () {
+                      setState(() {
+                        _numberControllers[index].dispose();
+                        _numberControllers.removeAt(index);
+                        _qtyControllers[index].dispose();
+                        _qtyControllers.removeAt(index);
+                      });
+                    },
+                  ),
+                if (isLast)
+                  IconButton(
+                    icon: const Icon(Icons.add_circle, color: Colors.blue),
+                    onPressed: () {
+                      setState(() {
+                        _numberControllers.add(TextEditingController());
+                        _qtyControllers.add(TextEditingController());
+                      });
+                    },
+                  ),
+              ],
+            ),
+          );
+        }),
+      ],
     );
   }
 
