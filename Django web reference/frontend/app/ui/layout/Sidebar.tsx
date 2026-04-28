@@ -1,7 +1,7 @@
 'use client';
 import React, { useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { signOut } from 'next-auth/react';
+import { signOut, useSession } from 'next-auth/react';
 import Image from 'next/image';
 
 interface NavItem {
@@ -83,7 +83,6 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'sos',       label: 'Sales Orders', href: '/sos',        icon: IconSO },
   { key: 'vendors',   label: 'Vendors',      href: '/vendors',    icon: IconVendor },
   { key: 'chipbrands',label: 'Chip Brands',  href: '/chipbrands', icon: IconChip },
-  { key: 'settings',  label: 'Settings',     href: '/settings',   icon: IconSettings },
 ];
 
 interface SidebarProps { collapsed: boolean; }
@@ -170,7 +169,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
         onClick={() => signOut({ callbackUrl: '/login' })}
         title={collapsed ? 'Logout' : ''}
         style={{
-          borderTop: '1px solid var(--hair)', padding: collapsed ? 14 : '14px 16px',
+          padding: collapsed ? 14 : '14px 16px',
           display: 'flex', alignItems: 'center', gap: 10,
           justifyContent: collapsed ? 'center' : 'flex-start',
           width: '100%', border: 0, borderTop: '1px solid var(--hair)',
@@ -194,7 +193,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
 // ─────────────────────────────────────────────────────────── TopBar
 interface TopBarProps { onToggleSidebar: () => void; }
 
-export const TopBar: React.FC<TopBarProps> = ({ onToggleSidebar }) => (
+export const TopBar: React.FC<TopBarProps> = ({ onToggleSidebar }) => {
+  const { data: session } = useSession();
+  const username = session?.user?.name ?? session?.user?.email ?? '';
+  return (
   <div style={{
     height: 56, borderBottom: '1px solid var(--hair)', background: 'var(--bg)',
     display: 'flex', alignItems: 'center', padding: '0 28px', gap: 16,
@@ -209,9 +211,11 @@ export const TopBar: React.FC<TopBarProps> = ({ onToggleSidebar }) => (
       <IconPanelLeft size={16} />
     </button>
     <div style={{ flex: 1 }} />
-    <div className="mono" style={{ fontSize: 11, color: 'var(--ink-4)', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
-      WH-01 · BAY 3
-    </div>
+    {username && (
+      <div className="mono" style={{ fontSize: 11, color: 'var(--ink-4)', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
+        {username}
+      </div>
+    )}
     <div style={{ width: 1, height: 20, background: 'var(--hair)' }} />
     <button style={{
       background: 'none', border: 0, cursor: 'pointer',
@@ -224,4 +228,5 @@ export const TopBar: React.FC<TopBarProps> = ({ onToggleSidebar }) => (
       }} />
     </button>
   </div>
-);
+  );
+};

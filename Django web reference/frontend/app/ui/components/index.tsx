@@ -3,6 +3,7 @@ import React, {
   useState, useEffect, useRef, useContext, createContext,
   ReactNode, CSSProperties, KeyboardEvent,
 } from 'react';
+import { createPortal } from 'react-dom';
 
 // ─────────────────────────────────────────────────────────── Button
 type ButtonVariant = 'default' | 'primary' | 'ghost' | 'danger' | 'outline';
@@ -219,22 +220,24 @@ interface ModalProps {
 }
 
 export const Modal: React.FC<ModalProps> = ({ open, onClose, title, children, width = 480, footer }) => {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
   useEffect(() => {
     if (!open) return;
     const h = (e: globalThis.KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, [open, onClose]);
-  if (!open) return null;
-  return (
+  if (!open || !mounted) return null;
+  return createPortal(
     <div onClick={onClose} style={{
       position: 'fixed', inset: 0, background: 'rgba(26,25,23,0.28)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
-      paddingTop: 56,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      zIndex: 1000, padding: '72px 0 24px',
     }}>
       <div className="modal-in" onClick={e => e.stopPropagation()} style={{
         background: 'var(--surface)', border: '1px solid var(--hair-strong)',
-        borderRadius: 3, width, maxWidth: '92vw', maxHeight: '90vh',
+        borderRadius: 3, width, maxWidth: '92vw', maxHeight: 'calc(100vh - 96px)',
         display: 'flex', flexDirection: 'column', overflow: 'hidden',
         boxShadow: '0 20px 60px rgba(26,25,23,0.12)',
       }}>
@@ -263,7 +266,8 @@ export const Modal: React.FC<ModalProps> = ({ open, onClose, title, children, wi
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };
 

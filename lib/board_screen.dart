@@ -34,8 +34,14 @@ class _BoardScreenState extends State<BoardScreen> {
   final LayerLink _soLayerLink = LayerLink();
 
   // Selected SO info (set when user picks from dropdown)
+  String? _selectedSoId;
   String? _selectedSoVendor;
   String? _selectedSoDate;
+
+  // Pallets for selected SO
+  List<Map<String, dynamic>> _soPallets = [];
+  int? _selectedPalletId;
+  bool _palletsLoading = false;
 
   // Barcodes (dynamic list)
   List<TextEditingController> _barcodeControllers = [TextEditingController()];
@@ -45,7 +51,7 @@ class _BoardScreenState extends State<BoardScreen> {
   final TextEditingController _catalogController = TextEditingController();
   final TextEditingController _mpnController = TextEditingController();
   final TextEditingController _weightController = TextEditingController();
-  final TextEditingController _chipQtyController = TextEditingController();
+  final TextEditingController _chipQtyController = TextEditingController(text: '1');
   final TextEditingController _noteController = TextEditingController();
 
   List<XFile> _imageFiles = [];
@@ -178,12 +184,142 @@ class _BoardScreenState extends State<BoardScreen> {
 
   // ── SO Number inline search ─────────────────────────────────────────────────
 
+  Future<void> _fetchPallets(String soId) async {
+    setState(() { _palletsLoading = true; _soPallets = []; _selectedPalletId = null; });
+    try {
+      final apiKey = dotenv.env['API_KEY'] ?? '';
+      final response = await http.get(
+        Uri.parse('${widget.baseUrl}/product/scanner/sos/$soId/pallets/'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'X-Api-Key': apiKey,
+        },
+      ).timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+      if (response.statusCode == 200) {
+        final list = (jsonDecode(response.body) as List<dynamic>)
+            .cast<Map<String, dynamic>>();
+        setState(() {
+          _soPallets = list;
+          if (list.length == 1) _selectedPalletId = list[0]['id'] as int;
+        });
+      }
+    } catch (_) {
+      // Silently fail — _buildPalletPicker will show the "no pallets" warning
+    } finally {
+      if (mounted) setState(() => _palletsLoading = false);
+    }
+  }
+
+  String _palletLabel(Map<String, dynamic> pallet) {
+    final licence = pallet['licence_number'] as String? ?? '';
+    final payload = pallet['payload_number'] as String? ?? '';
+    if (licence.isNotEmpty || payload.isNotEmpty) {
+      return [licence, payload].where((s) => s.isNotEmpty).join('-');
+    }
+    final seq = pallet['pallet_seq'] as int? ?? 0;
+    return '#${seq.toString().padLeft(2, '0')}';
+  }
+
+  Widget _buildPalletPicker() {
+    if (_selectedSoId == null) return const SizedBox.shrink();
+
+    if (_palletsLoading) {
+      return Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+        decoration: BoxDecoration(
+          color: Colors.grey[100],
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: const Row(
+          children: [
+            SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            SizedBox(width: 12),
+            Text('Loading pallets…',
+                style: TextStyle(color: Colors.grey, fontSize: 14)),
+          ],
+        ),
+      );
+    }
+
+    if (_soPallets.isEmpty) {
+      return Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: Colors.orange[50],
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.orange[200]!),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.warning_amber_outlined,
+                size: 16, color: Colors.orange[700]),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'No pallets for this SO. Submit a pallet inbound first.',
+                style: TextStyle(fontSize: 13, color: Colors.orange[800]),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: InputDecorator(
+        decoration: InputDecoration(
+          labelText: 'Pallet',
+          labelStyle: const TextStyle(fontSize: 13, color: Colors.grey),
+          prefixIcon: const Icon(Icons.inventory_2, size: 18),
+          filled: true,
+          fillColor: const Color(0xFFFFF8E7),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide.none,
+          ),
+          contentPadding:
+              const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+        ),
+        child: DropdownButtonHideUnderline(
+          child: DropdownButton<int>(
+            value: _selectedPalletId,
+            isDense: true,
+            isExpanded: true,
+            style: const TextStyle(fontSize: 14, color: Colors.black87),
+            hint: const Text('Select pallet',
+                style: TextStyle(fontSize: 14, color: Colors.grey)),
+            items: _soPallets.map((p) {
+              return DropdownMenuItem<int>(
+                value: p['id'] as int,
+                child: Text(_palletLabel(p)),
+              );
+            }).toList(),
+            onChanged: (val) => setState(() => _selectedPalletId = val),
+          ),
+        ),
+      ),
+    );
+  }
+
   void _onSoNumberChanged(String query) {
-    // Clear selected SO info when user edits the field
-    if (_selectedSoVendor != null || _selectedSoDate != null) {
+    // Clear selected SO info and pallets when user edits the field
+    if (_selectedSoVendor != null ||
+        _selectedSoDate != null ||
+        _selectedSoId != null) {
       setState(() {
         _selectedSoVendor = null;
         _selectedSoDate = null;
+        _selectedSoId = null;
+        _soPallets = [];
+        _selectedPalletId = null;
       });
     }
     _soSearchDebounce?.cancel();
@@ -315,15 +451,20 @@ class _BoardScreenState extends State<BoardScreen> {
                     final vendor = so['vendor_name']?.toString() ?? '';
                     return InkWell(
                       onTap: () {
+                        final soId = so['id']?.toString();
                         _soNumberController.text = soNumber;
                         setState(() {
                           _selectedSoVendor =
                               vendor.isNotEmpty ? vendor : null;
                           _selectedSoDate = so['date']?.toString();
+                          _selectedSoId = soId;
                           _soResults = [];
+                          _soPallets = [];
+                          _selectedPalletId = null;
                         });
                         _removeSoOverlay();
                         _soNumberFocusNode.unfocus();
+                        if (soId != null) _fetchPallets(soId);
                       },
                       child: Padding(
                         padding: const EdgeInsets.symmetric(
@@ -375,6 +516,36 @@ class _BoardScreenState extends State<BoardScreen> {
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
 
+    // Block if SO number was typed manually without selecting from dropdown
+    if (_selectedSoId == null) {
+      _showSearchSnackBar(
+          'Please search and select an SO from the dropdown results.',
+          Colors.orange.shade700);
+      _soNumberFocusNode.requestFocus();
+      return;
+    }
+
+    // Block if pallets are still loading
+    if (_palletsLoading) {
+      _showSearchSnackBar(
+          'Pallets are still loading, please wait.', Colors.orange.shade700);
+      return;
+    }
+
+    // Block if SO selected but has no pallets yet
+    if (_soPallets.isEmpty) {
+      _showSearchSnackBar(
+          'No pallets for this SO. Submit a pallet inbound first.',
+          Colors.orange.shade700);
+      return;
+    }
+
+    // Block if pallets loaded but none selected
+    if (_soPallets.isNotEmpty && _selectedPalletId == null) {
+      _showSearchSnackBar('Please select a pallet.', Colors.orange.shade700);
+      return;
+    }
+
     setState(() => _isLoading = true);
     try {
       final apiKey = dotenv.env['API_KEY'] ?? '';
@@ -387,6 +558,7 @@ class _BoardScreenState extends State<BoardScreen> {
         'action': 'board_inbound',
         'so_number': _soNumberController.text,
         'barcodes': barcodes,
+        if (_selectedPalletId != null) 'pallet_id': _selectedPalletId,
       };
       if (_catalogController.text.isNotEmpty) {
         body['catalog'] = _catalogController.text;
@@ -480,14 +652,14 @@ class _BoardScreenState extends State<BoardScreen> {
   }
 
   void _resetForm() {
-    // SO Number and SO info persist; barcodes and other fields reset
+    // SO Number, SO info, and pallet selection persist across submits;
+    // barcodes and detail fields reset so worker can scan the next board batch
     for (final c in _barcodeControllers) {
       c.dispose();
     }
     _catalogController.clear();
     _mpnController.clear();
     _weightController.clear();
-    _chipQtyController.clear();
     _noteController.clear();
     setState(() {
       _barcodeControllers = [TextEditingController()];
@@ -564,7 +736,7 @@ class _BoardScreenState extends State<BoardScreen> {
                     prefixIcon: const Icon(Icons.qr_code,
                         size: 18, color: Colors.blue),
                     filled: true,
-                    fillColor: const Color(0xFFFFF8E7),
+                    fillColor: Colors.grey[100],
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
                       borderSide: BorderSide(color: Colors.grey[300]!),
@@ -583,14 +755,6 @@ class _BoardScreenState extends State<BoardScreen> {
                   ),
                   style: const TextStyle(fontSize: 14),
                   textInputAction: TextInputAction.next,
-                  validator: (value) {
-                    if (value == null || value.trim().isEmpty) {
-                      return index == 0
-                          ? 'At least one barcode is required'
-                          : 'Please enter barcode ${index + 1}';
-                    }
-                    return null;
-                  },
                 ),
               ),
               if (index == 0)
@@ -727,6 +891,18 @@ class _BoardScreenState extends State<BoardScreen> {
                   // SO Info row (shown after selecting from dropdown)
                   _buildSoInfoRow(),
 
+                  // Pallet picker (shown after SO is selected)
+                  _buildPalletPicker(),
+
+                  // MPN
+                  _buildTextField(
+                    _mpnController,
+                    'MPN',
+                    Icons.code,
+                    isRequired: true,
+                  ),
+                  const SizedBox(height: 8),
+
                   // Dynamic barcode fields
                   _buildBarcodeFields(),
 
@@ -735,14 +911,6 @@ class _BoardScreenState extends State<BoardScreen> {
                     _catalogController,
                     'Catalog',
                     Icons.category,
-                  ),
-                  const SizedBox(height: 8),
-
-                  // MPN
-                  _buildTextField(
-                    _mpnController,
-                    'MPN',
-                    Icons.code,
                   ),
                   const SizedBox(height: 8),
 
@@ -764,14 +932,26 @@ class _BoardScreenState extends State<BoardScreen> {
                       ),
                       const SizedBox(width: 10),
                       Expanded(
-                        child: _buildTextField(
-                          _chipQtyController,
-                          'Chip Qty',
-                          Icons.memory,
-                          keyboardType: TextInputType.number,
-                          inputFormatters: [
-                            FilteringTextInputFormatter.digitsOnly
-                          ],
+                        child: TextFormField(
+                          controller: _chipQtyController,
+                          readOnly: true,
+                          decoration: InputDecoration(
+                            labelText: 'Chip Qty',
+                            labelStyle: const TextStyle(
+                                fontSize: 13, color: Colors.grey),
+                            prefixIcon:
+                                const Icon(Icons.memory, size: 18),
+                            filled: true,
+                            fillColor: Colors.grey[300],
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide.none,
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                                vertical: 12, horizontal: 12),
+                          ),
+                          style: const TextStyle(
+                              fontSize: 14, color: Colors.black54),
                         ),
                       ),
                     ],

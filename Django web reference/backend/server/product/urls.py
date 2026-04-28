@@ -29,6 +29,7 @@ urlpatterns = [
     path('scanner/', views.scanner_api, name='scanner-api'),
     path('scanner/vendors/', views.scanner_vendor_list, name='scanner-vendor-list'),
     path('scanner/vendors/<int:pk>/', views.scanner_vendor_detail, name='scanner-vendor-detail'),
+    path('scanner/sos/<int:so_pk>/pallets/', views.scanner_so_pallets, name='scanner-so-pallets'),
     path('scanner/sos/<int:so_pk>/photos/', views.scanner_so_photo_upload, name='scanner-so-photo-upload'),
     path('scanner/boards/<int:board_pk>/photo/', views.scanner_board_photo, name='scanner-board-photo'),
 

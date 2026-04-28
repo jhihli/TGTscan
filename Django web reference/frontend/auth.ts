@@ -36,14 +36,13 @@ export const authOptions = {
                     }
 
                     try {
+                        // Step 1: Authenticate via Django login endpoint (AllowAny)
                         const response = await fetch(`${API_URL}/account/users/`, {
                             method: "POST",
-                            headers: {
-                                "Content-Type": "application/json",
-                            },
+                            headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({ username, password }),
                         });
-    
+
                         if (!response.ok) {
                             console.log("Invalid credentials");
                             return null;
@@ -51,7 +50,7 @@ export const authOptions = {
 
                         const user: User = await response.json();
 
-                        // Also obtain a JWT token for API calls
+                        // Step 2: Get JWT token for API calls
                         let accessToken: string | null = null;
                         try {
                             const tokenRes = await fetch(`${API_URL}/api/token/`, {

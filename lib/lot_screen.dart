@@ -25,22 +25,25 @@ class _LotScreenState extends State<LotScreen> {
 
   final TextEditingController _soNumberController = TextEditingController();
   final TextEditingController _vendorController = TextEditingController();
-  final TextEditingController _licenceController = TextEditingController();
-  final TextEditingController _payloadController = TextEditingController();
   final TextEditingController _dateController = TextEditingController();
   final TextEditingController _noteController = TextEditingController();
 
   final FocusNode _soNumberFocusNode = FocusNode();
   final FocusNode _vendorFocusNode = FocusNode();
-  final FocusNode _licenceFocusNode = FocusNode();
-  final FocusNode _payloadFocusNode = FocusNode();
   final FocusNode _noteFocusNode = FocusNode();
 
-  // Dynamic pallet rows — each row has weight + qty controllers + focus nodes
+  // Per-pallet row controllers — all lists share the same index per row
+  List<TextEditingController> _licenceControllers = [TextEditingController()];
+  List<TextEditingController> _payloadControllers = [TextEditingController()];
   List<TextEditingController> _palletWeightControllers = [TextEditingController()];
   List<TextEditingController> _palletQtyControllers = [TextEditingController()];
+  List<TextEditingController> _boardQtyControllers = [TextEditingController()];
+
+  List<FocusNode> _licenceFocusNodes = [FocusNode()];
+  List<FocusNode> _payloadFocusNodes = [FocusNode()];
   List<FocusNode> _palletWeightFocusNodes = [FocusNode()];
   List<FocusNode> _palletQtyFocusNodes = [FocusNode()];
+  List<FocusNode> _boardQtyFocusNodes = [FocusNode()];
 
   // 'per_pallet' → Pallet Qty locked to 1; 'aggregated' → editable
   String _weightRule = 'per_pallet';
@@ -61,7 +64,6 @@ class _LotScreenState extends State<LotScreen> {
   void initState() {
     super.initState();
     _dateController.text = DateFormat('yyyy-MM-dd').format(DateTime.now());
-
     _loadVendors();
 
     _dataWedge = FlutterDataWedge();
@@ -69,25 +71,41 @@ class _LotScreenState extends State<LotScreen> {
       if (_soNumberFocusNode.hasFocus) {
         setState(() => _soNumberController.text = result.data.toUpperCase());
         _vendorFocusNode.requestFocus();
-      } else if (_licenceFocusNode.hasFocus) {
-        setState(() => _licenceController.text = result.data);
-        _payloadFocusNode.requestFocus();
-      } else if (_payloadFocusNode.hasFocus) {
-        setState(() => _payloadController.text = result.data);
-        _palletWeightFocusNodes[0].requestFocus();
-      } else {
-        final weightIdx = _palletWeightFocusNodes.indexWhere((fn) => fn.hasFocus);
-        if (weightIdx != -1) {
-          setState(() => _palletWeightControllers[weightIdx].text = result.data);
-          if (_isPerPallet) {
-            final nextFocus = weightIdx + 1 < _palletWeightFocusNodes.length
-                ? _palletWeightFocusNodes[weightIdx + 1]
-                : _noteFocusNode;
-            nextFocus.requestFocus();
-          } else {
-            _palletQtyFocusNodes[weightIdx].requestFocus();
-          }
+        return;
+      }
+      final licenceIdx = _licenceFocusNodes.indexWhere((fn) => fn.hasFocus);
+      if (licenceIdx != -1) {
+        setState(() => _licenceControllers[licenceIdx].text = result.data);
+        _payloadFocusNodes[licenceIdx].requestFocus();
+        return;
+      }
+      final payloadIdx = _payloadFocusNodes.indexWhere((fn) => fn.hasFocus);
+      if (payloadIdx != -1) {
+        setState(() => _payloadControllers[payloadIdx].text = result.data);
+        _palletWeightFocusNodes[payloadIdx].requestFocus();
+        return;
+      }
+      final weightIdx = _palletWeightFocusNodes.indexWhere((fn) => fn.hasFocus);
+      if (weightIdx != -1) {
+        setState(() => _palletWeightControllers[weightIdx].text = result.data);
+        if (_isPerPallet) {
+          _boardQtyFocusNodes[weightIdx].requestFocus();
+        } else {
+          _palletQtyFocusNodes[weightIdx].requestFocus();
         }
+        return;
+      }
+      final qtyIdx = _palletQtyFocusNodes.indexWhere((fn) => fn.hasFocus);
+      if (qtyIdx != -1) {
+        setState(() => _palletQtyControllers[qtyIdx].text = result.data);
+        _boardQtyFocusNodes[qtyIdx].requestFocus();
+        return;
+      }
+      final boardQtyIdx = _boardQtyFocusNodes.indexWhere((fn) => fn.hasFocus);
+      if (boardQtyIdx != -1) {
+        setState(() => _boardQtyControllers[boardQtyIdx].text = result.data);
+        final isLast = boardQtyIdx == _licenceControllers.length - 1;
+        (isLast ? _noteFocusNode : _licenceFocusNodes[boardQtyIdx + 1]).requestFocus();
       }
     });
   }
@@ -97,19 +115,21 @@ class _LotScreenState extends State<LotScreen> {
     _scanSubscription.cancel();
     _soNumberController.dispose();
     _vendorController.dispose();
-    _licenceController.dispose();
-    _payloadController.dispose();
     _dateController.dispose();
     _noteController.dispose();
     _soNumberFocusNode.dispose();
     _vendorFocusNode.dispose();
-    _licenceFocusNode.dispose();
-    _payloadFocusNode.dispose();
     _noteFocusNode.dispose();
+    for (final c in _licenceControllers) { c.dispose(); }
+    for (final c in _payloadControllers) { c.dispose(); }
     for (final c in _palletWeightControllers) { c.dispose(); }
     for (final c in _palletQtyControllers) { c.dispose(); }
+    for (final c in _boardQtyControllers) { c.dispose(); }
+    for (final fn in _licenceFocusNodes) { fn.dispose(); }
+    for (final fn in _payloadFocusNodes) { fn.dispose(); }
     for (final fn in _palletWeightFocusNodes) { fn.dispose(); }
     for (final fn in _palletQtyFocusNodes) { fn.dispose(); }
+    for (final fn in _boardQtyFocusNodes) { fn.dispose(); }
     super.dispose();
   }
 
@@ -154,13 +174,12 @@ class _LotScreenState extends State<LotScreen> {
       }
     } on TimeoutException {
       if (mounted) {
-        setState(() => _vendorLoadError = 'Connection timed out');
-        _showNetworkAlert('Connection timed out. Please check your network and tap Retry.');
+        setState(() => _vendorLoadError = 'Timed out — tap Retry');
       }
-    } on SocketException {
+    } on SocketException catch (e) {
       if (mounted) {
-        setState(() => _vendorLoadError = 'Network unavailable');
-        _showNetworkAlert('Cannot reach the server. Please check your network connection and tap Retry.');
+        setState(() => _vendorLoadError =
+            'Cannot reach ${widget.baseUrl}\n${e.message}');
       }
     } catch (e) {
       if (mounted) setState(() => _vendorLoadError = e.toString());
@@ -184,44 +203,17 @@ class _LotScreenState extends State<LotScreen> {
     setState(() => _imageFiles.remove(imageFile));
   }
 
-  /// Returns true if SO exists, false if not found.
-  /// Throws on network/server errors so the caller can block submission.
-  Future<bool> _checkSoExists(String soNumber) async {
-    final apiKey = dotenv.env['API_KEY'] ?? '';
-    final response = await http.post(
-      Uri.parse('${widget.baseUrl}/product/scanner/'),
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Api-Key': apiKey,
-      },
-      body: jsonEncode({'action': 'find_so_number', 'barcode': soNumber}),
-    ).timeout(const Duration(seconds: 10));
-    if (response.statusCode == 200) {
-      final body = jsonDecode(response.body) as Map<String, dynamic>;
-      return body['success'] == true;
-    }
-    if (response.statusCode == 404) return false;
-    throw Exception('SO check failed (HTTP ${response.statusCode})');
-  }
-
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isLoading = true);
     try {
-      final soNumber = _soNumberController.text.trim();
-      final exists = await _checkSoExists(soNumber);
-      if (!mounted) return;
-
-      if (exists) {
-        _showSnackBar('Same SO exists — submission blocked.', isError: true);
-        return;
-      }
-
       final apiKey = dotenv.env['API_KEY'] ?? '';
       String? soId;
 
       for (int i = 0; i < _palletWeightControllers.length; i++) {
         final palletQty = _isPerPallet ? '1' : _palletQtyControllers[i].text;
+        final boardQtyRaw = _boardQtyControllers[i].text.trim();
+
         final response = await http
             .post(
               Uri.parse('${widget.baseUrl}/product/scanner/'),
@@ -238,10 +230,11 @@ class _LotScreenState extends State<LotScreen> {
                     : _vendorController.text.trim(),
                 'weight_rule': _weightRule,
                 'date': _dateController.text,
-                'licence_number': _licenceController.text,
-                'payload_number': _payloadController.text,
+                'licence_number': _licenceControllers[i].text,
+                'payload_number': _payloadControllers[i].text,
                 'pallet_weight': _palletWeightControllers[i].text,
                 'pallet_qty': palletQty,
+                'board_qty': boardQtyRaw.isEmpty ? null : int.tryParse(boardQtyRaw),
                 'noted': _noteController.text,
               }),
             )
@@ -305,48 +298,76 @@ class _LotScreenState extends State<LotScreen> {
 
   void _addPalletRow() {
     setState(() {
+      _licenceControllers.add(TextEditingController());
+      _payloadControllers.add(TextEditingController());
       _palletWeightControllers.add(TextEditingController());
       _palletQtyControllers.add(TextEditingController());
+      _boardQtyControllers.add(TextEditingController());
+      _licenceFocusNodes.add(FocusNode());
+      _payloadFocusNodes.add(FocusNode());
       _palletWeightFocusNodes.add(FocusNode());
       _palletQtyFocusNodes.add(FocusNode());
+      _boardQtyFocusNodes.add(FocusNode());
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _palletWeightFocusNodes.last.requestFocus();
+      _licenceFocusNodes.last.requestFocus();
     });
   }
 
   void _removePalletRow(int index) {
     if (_palletWeightControllers.length <= 1) return;
     setState(() {
+      _licenceControllers[index].dispose();
+      _payloadControllers[index].dispose();
       _palletWeightControllers[index].dispose();
       _palletQtyControllers[index].dispose();
+      _boardQtyControllers[index].dispose();
+      _licenceFocusNodes[index].dispose();
+      _payloadFocusNodes[index].dispose();
       _palletWeightFocusNodes[index].dispose();
       _palletQtyFocusNodes[index].dispose();
+      _boardQtyFocusNodes[index].dispose();
+      _licenceControllers.removeAt(index);
+      _payloadControllers.removeAt(index);
       _palletWeightControllers.removeAt(index);
       _palletQtyControllers.removeAt(index);
+      _boardQtyControllers.removeAt(index);
+      _licenceFocusNodes.removeAt(index);
+      _payloadFocusNodes.removeAt(index);
       _palletWeightFocusNodes.removeAt(index);
       _palletQtyFocusNodes.removeAt(index);
+      _boardQtyFocusNodes.removeAt(index);
     });
   }
 
   void _resetForm() {
     _soNumberController.clear();
     _vendorController.clear();
-    _licenceController.clear();
-    _payloadController.clear();
     _dateController.text = DateFormat('yyyy-MM-dd').format(DateTime.now());
     _noteController.clear();
     setState(() {
       for (var i = 1; i < _palletWeightControllers.length; i++) {
+        _licenceControllers[i].dispose();
+        _payloadControllers[i].dispose();
         _palletWeightControllers[i].dispose();
         _palletQtyControllers[i].dispose();
+        _boardQtyControllers[i].dispose();
+        _licenceFocusNodes[i].dispose();
+        _payloadFocusNodes[i].dispose();
         _palletWeightFocusNodes[i].dispose();
         _palletQtyFocusNodes[i].dispose();
+        _boardQtyFocusNodes[i].dispose();
       }
+      _licenceControllers = [TextEditingController()];
+      _payloadControllers = [TextEditingController()];
       _palletWeightControllers = [TextEditingController()];
       _palletQtyControllers = [TextEditingController()];
+      _boardQtyControllers = [TextEditingController()];
+      _licenceFocusNodes = [FocusNode()];
+      _payloadFocusNodes = [FocusNode()];
       _palletWeightFocusNodes = [FocusNode()];
       _palletQtyFocusNodes = [FocusNode()];
+      _boardQtyFocusNodes = [FocusNode()];
       _imageFiles = [];
       _weightRule = 'per_pallet';
       _selectedVendorName = null;
@@ -468,7 +489,7 @@ class _LotScreenState extends State<LotScreen> {
         'Vendor',
         Icons.business,
         focusNode: _vendorFocusNode,
-        nextFocusNode: _licenceFocusNode,
+        nextFocusNode: _licenceFocusNodes[0],
       );
     }
 
@@ -528,10 +549,78 @@ class _LotScreenState extends State<LotScreen> {
           _weightRule =
               (vendor['default_weight_rule'] as String?) ?? 'per_pallet';
         });
-        _palletWeightFocusNodes[0].requestFocus();
+        _licenceFocusNodes[0].requestFocus();
       },
       validator: (value) =>
           (value == null || value.isEmpty) ? 'Please select a vendor' : null,
+    );
+  }
+
+  Widget _buildCompactField(
+    TextEditingController controller,
+    String hint, {
+    TextInputType? keyboardType,
+    List<TextInputFormatter>? inputFormatters,
+    bool isRequired = false,
+    FocusNode? focusNode,
+    FocusNode? nextFocusNode,
+  }) {
+    return KeyboardListener(
+      focusNode: FocusNode(),
+      onKeyEvent: (KeyEvent event) {
+        if (event is KeyDownEvent &&
+            (event.logicalKey == LogicalKeyboardKey.enter ||
+                event.logicalKey == LogicalKeyboardKey.numpadEnter)) {
+          nextFocusNode?.requestFocus();
+        }
+      },
+      child: TextFormField(
+        controller: controller,
+        focusNode: focusNode,
+        decoration: InputDecoration(
+          hintText: hint,
+          hintStyle: const TextStyle(fontSize: 13, color: Colors.grey),
+          filled: true,
+          fillColor: isRequired ? const Color(0xFFFFF8E7) : Colors.grey[100],
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: BorderSide.none,
+          ),
+          contentPadding:
+              const EdgeInsets.symmetric(vertical: 10, horizontal: 10),
+          isDense: true,
+        ),
+        style: const TextStyle(fontSize: 13),
+        keyboardType: keyboardType,
+        inputFormatters: inputFormatters,
+        textInputAction:
+            nextFocusNode != null ? TextInputAction.next : TextInputAction.done,
+        onFieldSubmitted: (_) => nextFocusNode?.requestFocus(),
+        validator: isRequired
+            ? (value) =>
+                (value == null || value.isEmpty) ? 'Required' : null
+            : null,
+      ),
+    );
+  }
+
+  Widget _buildReadOnlyCompactField(String value) {
+    return TextFormField(
+      initialValue: value,
+      readOnly: true,
+      textAlign: TextAlign.center,
+      decoration: InputDecoration(
+        filled: true,
+        fillColor: Colors.grey[200],
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: BorderSide.none,
+        ),
+        contentPadding:
+            const EdgeInsets.symmetric(vertical: 10, horizontal: 10),
+        isDense: true,
+      ),
+      style: const TextStyle(fontSize: 13, color: Colors.black54),
     );
   }
 
@@ -617,83 +706,175 @@ class _LotScreenState extends State<LotScreen> {
   }
 
   Widget _buildPalletRows() {
+    final count = _palletWeightControllers.length;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: List.generate(_palletWeightControllers.length, (i) {
-        final isLast = i == _palletWeightControllers.length - 1;
-        final nextWeightFocus = isLast ? _noteFocusNode : _palletWeightFocusNodes[i + 1];
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 8),
+      children: [
+        // Section header with + Add outside
+        Padding(
+          padding: const EdgeInsets.only(bottom: 4),
           child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                flex: 5,
-                child: _buildTextField(
-                  _palletWeightControllers[i],
-                  'Weight(lb)',
-                  Icons.line_weight,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
-                  maxDigits: 4,
-                  focusNode: _palletWeightFocusNodes[i],
-                  nextFocusNode: _isPerPallet ? nextWeightFocus : _palletQtyFocusNodes[i],
+              Text(
+                'PALLETS · $count',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey[600],
+                  letterSpacing: 0.5,
                 ),
               ),
-              const SizedBox(width: 8),
-              Expanded(
-                flex: 3,
-                child: _isPerPallet
-                    ? TextFormField(
-                        initialValue: '1',
-                        readOnly: true,
-                        decoration: InputDecoration(
-                          labelText: 'Qty',
-                          labelStyle: const TextStyle(fontSize: 11, color: Colors.grey),
-                          prefixIcon: const Icon(Icons.stacked_bar_chart, size: 18),
-                          filled: true,
-                          fillColor: Colors.grey[200],
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide.none,
-                          ),
-                          contentPadding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
-                        ),
-                        style: const TextStyle(fontSize: 14, color: Colors.black54),
-                      )
-                    : _buildTextField(
-                        _palletQtyControllers[i],
-                        'Qty',
-                        Icons.stacked_bar_chart,
-                        keyboardType: TextInputType.number,
-                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                        maxDigits: 4,
-                        focusNode: _palletQtyFocusNodes[i],
-                        nextFocusNode: nextWeightFocus,
-                        labelFontSize: 11,
-                      ),
-              ),
-              // Row 0: Add button; subsequent rows: Remove button
-              Padding(
-                padding: const EdgeInsets.only(left: 4, top: 4),
-                child: i == 0
-                    ? IconButton(
-                        icon: const Icon(Icons.add_circle_outline, color: Colors.blue, size: 22),
-                        onPressed: _addPalletRow,
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(minWidth: 32, minHeight: 48),
-                      )
-                    : IconButton(
-                        icon: const Icon(Icons.remove_circle_outline, color: Colors.red, size: 22),
-                        onPressed: () => _removePalletRow(i),
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(minWidth: 32, minHeight: 48),
-                      ),
+              const Spacer(),
+              GestureDetector(
+                onTap: _addPalletRow,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    '+ Add',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.blue.shade700,
+                    ),
+                  ),
+                ),
               ),
             ],
           ),
-        );
-      }),
+        ),
+        // One card per pallet row — swipe right to reveal Remove
+        ...List.generate(count, (i) {
+          final isLast = i == count - 1;
+          final nextRowFirstFocus =
+              isLast ? _noteFocusNode : _licenceFocusNodes[i + 1];
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Dismissible(
+              key: ObjectKey(_licenceControllers[i]),
+              direction: DismissDirection.startToEnd,
+              confirmDismiss: (_) async => count > 1,
+              onDismissed: (_) => _removePalletRow(i),
+              background: Container(
+                decoration: BoxDecoration(
+                  color: Colors.red.shade400,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                alignment: Alignment.centerLeft,
+                padding: const EdgeInsets.only(left: 20),
+                child: const Row(
+                  children: [
+                    Icon(Icons.delete_outline, color: Colors.white, size: 20),
+                    SizedBox(width: 6),
+                    Text(
+                      'Remove',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.7),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.blue.shade100),
+                ),
+                padding: const EdgeInsets.all(10),
+                child: Column(
+                  children: [
+                    // Row 1: Licence | Payload
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildCompactField(
+                            _licenceControllers[i],
+                            'Licence',
+                            focusNode: _licenceFocusNodes[i],
+                            nextFocusNode: _payloadFocusNodes[i],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: _buildCompactField(
+                            _payloadControllers[i],
+                            'Payload',
+                            focusNode: _payloadFocusNodes[i],
+                            nextFocusNode: _palletWeightFocusNodes[i],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    // Row 2: Weight | Qty | Boards qty
+                    Row(
+                      children: [
+                        Expanded(
+                          flex: 3,
+                          child: _buildCompactField(
+                            _palletWeightControllers[i],
+                            'Weight',
+                            keyboardType:
+                                const TextInputType.numberWithOptions(
+                                    decimal: true),
+                            inputFormatters: [
+                              FilteringTextInputFormatter.allow(
+                                  RegExp(r'[0-9.]'))
+                            ],
+                            isRequired: true,
+                            focusNode: _palletWeightFocusNodes[i],
+                            nextFocusNode: _isPerPallet
+                                ? _boardQtyFocusNodes[i]
+                                : _palletQtyFocusNodes[i],
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          flex: 3,
+                          child: _isPerPallet
+                              ? _buildReadOnlyCompactField('1')
+                              : _buildCompactField(
+                                  _palletQtyControllers[i],
+                                  'Qty',
+                                  keyboardType: TextInputType.number,
+                                  inputFormatters: [
+                                    FilteringTextInputFormatter.digitsOnly
+                                  ],
+                                  isRequired: true,
+                                  focusNode: _palletQtyFocusNodes[i],
+                                  nextFocusNode: _boardQtyFocusNodes[i],
+                                ),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          flex: 3,
+                          child: _buildCompactField(
+                            _boardQtyControllers[i],
+                            'Boards qty',
+                            keyboardType: TextInputType.number,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly
+                            ],
+                            focusNode: _boardQtyFocusNodes[i],
+                            nextFocusNode: nextRowFirstFocus,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }),
+      ],
     );
   }
 
@@ -780,7 +961,7 @@ class _LotScreenState extends State<LotScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // SO Number
+                  // SO Number + Generate button
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -791,7 +972,8 @@ class _LotScreenState extends State<LotScreen> {
                           textCapitalization: TextCapitalization.characters,
                           inputFormatters: [
                             TextInputFormatter.withFunction((oldValue, newValue) =>
-                                newValue.copyWith(text: newValue.text.toUpperCase())),
+                                newValue.copyWith(
+                                    text: newValue.text.toUpperCase())),
                           ],
                           decoration: InputDecoration(
                             labelText: 'SO Number',
@@ -849,7 +1031,7 @@ class _LotScreenState extends State<LotScreen> {
                   ),
                   const SizedBox(height: 8),
 
-                  // Vendor dropdown (falls back to text field when auth unavailable)
+                  // Vendor dropdown (falls back to text field when load fails)
                   _buildVendorField(),
                   const SizedBox(height: 8),
 
@@ -857,37 +1039,8 @@ class _LotScreenState extends State<LotScreen> {
                   _buildWeightRuleToggle(),
                   const SizedBox(height: 8),
 
-                  // Pallet rows (weight + qty, dynamic)
+                  // Pallet rows (each card: Licence+Payload / Weight+Qty+Boards)
                   _buildPalletRows(),
-                  const SizedBox(height: 8),
-
-                  // Licence + Payload side by side
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _buildTextField(
-                          _licenceController,
-                          'Licence',
-                          Icons.badge,
-                          isRequired: false,
-                          focusNode: _licenceFocusNode,
-                          nextFocusNode: _payloadFocusNode,
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: _buildTextField(
-                          _payloadController,
-                          'Payload',
-                          Icons.local_shipping,
-                          isRequired: false,
-                          focusNode: _payloadFocusNode,
-                          nextFocusNode: _noteFocusNode,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
 
                   // Date + Note side by side
                   Row(

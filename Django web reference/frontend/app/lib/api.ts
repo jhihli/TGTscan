@@ -101,6 +101,7 @@ export const api = {
     get: (id: number) => apiGet<SODetail>(`/sos/${id}/`),
     create: (d: Partial<SO>) => apiPost<SO>('/sos/', d),
     update: (id: number, d: Partial<SO>) => apiPut<SO>(`/sos/${id}/`, d),
+    delete: (id: number) => apiDelete(`/sos/${id}/`),
   },
 
   // Pallets
